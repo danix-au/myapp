@@ -1,0 +1,158 @@
+# Verification gates for every PR into main.
+#
+# The agent's GitHub App has NO "workflows" permission, so it cannot change this file.
+# All gate LOGIC lives in the private verify repo (pinned by VERIFY_REF), so an agent PR
+# cannot weaken the gates by editing scripts in this repo either.
+#
+# Required status check in the ruleset: "gates" (the last job).
+name: gates
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERIFY_REPO: danix-au/myapp-verify
+  VERIFY_REF: main # pin to a commit SHA once the gates are stable
+
+jobs:
+  # Deterministic checks: tamper, supply chain, code health, visible + holdout tests.
+  # Runs PR code, so it gets NO API key. Holdouts are copied outside the workspace.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out verify repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.VERIFY_REPO }}
+          ref: ${{ env.VERIFY_REF }}
+          token: ${{ secrets.VERIFY_READ_TOKEN }}
+          path: .verify-tmp
+          persist-credentials: false
+
+      - name: Move verify repo out of the workspace
+        run: mv .verify-tmp "$RUNNER_TEMP/verify"
+
+      - name: Run checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: bash "$RUNNER_TEMP/verify/gates/run_checks.sh" "$GITHUB_WORKSPACE"
+
+  # Independent evaluator: a fresh Claude (your Max subscription), read-only tools, judges the diff against the
+  # acceptance criteria in the linked issue (the "contract"). Never executes PR code.
+  evaluate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out verify repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.VERIFY_REPO }}
+          ref: ${{ env.VERIFY_REF }}
+          token: ${{ secrets.VERIFY_READ_TOKEN }}
+          path: .verify-tmp
+          persist-credentials: false
+
+      - name: Move verify repo out of the workspace
+        run: mv .verify-tmp "$RUNNER_TEMP/verify"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Evaluate against the task contract
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} # Max subscription
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash "$RUNNER_TEMP/verify/gates/evaluate.sh" "$GITHUB_WORKSPACE"
+
+  # Security review by a fresh Claude on your Max subscription, read-only tools.
+  # Advisory (results in the job summary) until you have tuned it; to make it blocking,
+  # remove continue-on-error and add it to the "gates" job's needs.
+  security-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out verify repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.VERIFY_REPO }}
+          ref: ${{ env.VERIFY_REF }}
+          token: ${{ secrets.VERIFY_READ_TOKEN }}
+          path: .verify-tmp
+          persist-credentials: false
+
+      - name: Move verify repo out of the workspace
+        run: mv .verify-tmp "$RUNNER_TEMP/verify"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Security review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash "$RUNNER_TEMP/verify/gates/security_review.sh" "$GITHUB_WORKSPACE"
+
+  # The single required status check.
+  gates:
+    if: always()
+    needs: [checks, evaluate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required gates passed
+        env:
+          CHECKS: ${{ needs.checks.result }}
+          EVALUATE: ${{ needs.evaluate.result }}
+        run: |
+          echo "checks=$CHECKS evaluate=$EVALUATE"
+          [ "$CHECKS" = "success" ] || exit 1
+          case "$EVALUATE" in success|skipped) ;; *) exit 1 ;; esac

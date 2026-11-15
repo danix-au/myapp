@@ -1,0 +1,38 @@
+# Risk tiering by path.
+# Any PR touching a path below needs YOUR approval (ruleset: "require review from Code Owners").
+# Everything else can merge on green gates alone.
+# Replace @your-github-handle. Add your own high-risk paths at the bottom.
+
+# The verification surface itself
+/.github/                   @danix-au
+/CLAUDE.md                  @danix-au
+/.claude/                   @danix-au
+
+# Dependencies and build images (supply chain)
+**/package.json             @danix-au
+**/package-lock.json        @danix-au
+**/pnpm-lock.yaml           @danix-au
+**/yarn.lock                @danix-au
+**/requirements*.txt        @danix-au
+**/pyproject.toml           @danix-au
+**/poetry.lock              @danix-au
+**/uv.lock                  @danix-au
+**/go.mod                   @danix-au
+**/go.sum                   @danix-au
+**/Cargo.toml               @danix-au
+**/Cargo.lock               @danix-au
+**/Dockerfile               @danix-au
+
+# Test configuration (the agent may add tests, but not change how they run)
+**/jest.config.*            @danix-au
+**/vitest.config.*          @danix-au
+**/pytest.ini               @danix-au
+**/conftest.py              @danix-au
+**/tox.ini                  @danix-au
+**/.coveragerc              @danix-au
+
+# High-risk code — edit to match your project
+/src/auth/                  @danix-au
+/src/payments/              @danix-au
+/migrations/                @danix-au
+/infra/                     @danix-au
